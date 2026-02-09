@@ -1,4 +1,5 @@
-name = "theatremix_remote_display"
+name = "theatremix-remote-display"
+copyright = "© 2026 William Stoneham"
 productName = "TheatreMix Remote Display"
 identifier = "com.williamstoneham.theatremix-remote-display"
 version = "0.1.0"
@@ -12,7 +13,7 @@ icons = ["assets/512x512@2x.icns"]
 outDir = "dist"
 binariesDir = "target/release"
 [[binaries]]
-path = "theatremix_remote_display"
+path = "theatremix-remote-display"
 main = true
 
 [macos]

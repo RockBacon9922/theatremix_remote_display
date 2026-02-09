@@ -306,7 +306,7 @@ fn bind_socket(local_addr: SocketAddr, host: &str) -> UdpSocket {
 
 fn config_path() -> Option<PathBuf> {
     let base = dirs::config_dir()?;
-    Some(base.join("theatremix_remote_display").join("host.txt"))
+    Some(base.join("theatremix-remote-display").join("host.txt"))
 }
 
 fn load_host(path: &PathBuf) -> Option<String> {
