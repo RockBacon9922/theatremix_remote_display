@@ -2,8 +2,7 @@
 
 A TheatreMix companion app that receives OSC and renders the current Cue, Description and Color
 
-<img width="1052" height="463" alt="Screenshot 2026-02-09 at 17 40 54" src="https://github.com/user-attachments/assets/3baf29d2-eafd-48fe-99a3-44f62c6c66bb" />
-
+<img width="1052" height="463" alt="Screenshot 2026-02-09 at 20 17 43" src="https://github.com/user-attachments/assets/4176bb3d-9dea-4079-b0cc-0ffa5bc78287" />
 
 **Implementation**
 - Written in Rust.
