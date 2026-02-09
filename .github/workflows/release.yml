@@ -31,7 +31,7 @@ jobs:
 
       - name: Make universal binary
         run: |
-          BIN_NAME="theatremix_remote_display"
+          BIN_NAME="theatremix-remote-display"
           mkdir -p target/release
           lipo -create \
             "target/aarch64-apple-darwin/release/${BIN_NAME}" \
@@ -63,10 +63,10 @@ jobs:
         run: cargo install cargo-packager --locked
 
       - name: Build (release)
-        run: cargo build --release
+        run: cargo build --release --target x86_64-pc-windows-msvc
 
       - name: Bundle
-        run: cargo packager --release --formats msi
+        run: cargo packager --release --target x86_64-pc-windows-msvc --formats wix
 
       - name: Upload release assets
         uses: softprops/action-gh-release@v2
@@ -92,10 +92,10 @@ jobs:
         run: cargo install cargo-packager --locked
 
       - name: Build (release)
-        run: cargo build --release
+        run: cargo build --release --target x86_64-unknown-linux-gnu
 
       - name: Bundle (deb)
-        run: cargo packager --release --formats deb
+        run: cargo packager --release --target x86_64-unknown-linux-gnu --formats deb
 
       - name: Upload release assets
         uses: softprops/action-gh-release@v2
