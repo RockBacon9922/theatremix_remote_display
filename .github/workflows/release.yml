@@ -65,6 +65,11 @@ jobs:
       - name: Build (release)
         run: cargo build --release --target x86_64-pc-windows-msvc
 
+      - name: Stage binary for packager
+        run: |
+          New-Item -ItemType Directory -Force target/release | Out-Null
+          Copy-Item target/x86_64-pc-windows-msvc/release/theatremix-remote-display.exe target/release/
+
       - name: Bundle
         run: cargo packager --release --target x86_64-pc-windows-msvc --formats wix
 
@@ -93,6 +98,11 @@ jobs:
 
       - name: Build (release)
         run: cargo build --release --target x86_64-unknown-linux-gnu
+
+      - name: Stage binary for packager
+        run: |
+          mkdir -p target/release
+          cp target/x86_64-unknown-linux-gnu/release/theatremix-remote-display target/release/
 
       - name: Bundle (deb)
         run: cargo packager --release --target x86_64-unknown-linux-gnu --formats deb
