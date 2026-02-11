@@ -39,6 +39,8 @@ jobs:
             -output "target/release/${BIN_NAME}"
 
       - name: Package
+        env:
+          CI: false
         run: cargo packager --release --formats dmg
 
       - name: Upload release assets
@@ -86,7 +88,15 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y dpkg-dev
+          sudo apt-get install -y \
+            dpkg-dev \
+            libclang-dev \
+            libgtk-3-dev \
+            libxcb-render0-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev \
+            libxkbcommon-dev \
+            libssl-dev
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
