@@ -427,6 +427,10 @@ fn main() -> eframe::Result<()> {
     native_options.viewport = ViewportBuilder::default()
         .with_inner_size([720.0, 200.0])
         .with_icon(load_icon());
+    #[cfg(target_os = "windows")]
+    {
+        native_options.renderer = eframe::Renderer::Wgpu;
+    }
     eframe::run_native(
         "TheatreMix Remote Display",
         native_options,
