@@ -253,10 +253,7 @@ fn spawn_osc_thread(host: String, tx: Sender<NetEvent>, cmd_rx: Receiver<NetCmd>
                 match bind_socket(&current_host) {
                     Ok(new_socket) => socket = Some(new_socket),
                     Err(err) => {
-                        eprintln!(
-                            "OSC socket setup failed for host '{}': {err}",
-                            current_host
-                        );
+                        eprintln!("OSC socket setup failed for host '{}': {err}", current_host);
                         thread::sleep(Duration::from_millis(500));
                         continue;
                     }
@@ -295,12 +292,11 @@ fn spawn_osc_thread(host: String, tx: Sender<NetEvent>, cmd_rx: Receiver<NetCmd>
                             }
                             OscPacket::Bundle(bundle) => {
                                 for pkt in bundle.content {
-                                    if let OscPacket::Message(msg) = pkt {
-                                        if let Some(ev) =
+                                    if let OscPacket::Message(msg) = pkt
+                                        && let Some(ev) =
                                             handle_message(msg, &mut subscription_expiry)
-                                        {
-                                            let _ = tx.send(ev);
-                                        }
+                                    {
+                                        let _ = tx.send(ev);
                                     }
                                 }
                             }
@@ -329,7 +325,9 @@ fn bind_socket(host: &str) -> io::Result<UdpSocket> {
     let remote_addr = format!("{host}:32000")
         .to_socket_addrs()?
         .next()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "host resolved to no address"))?;
+        .ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "host resolved to no address")
+        })?;
     let socket = UdpSocket::bind("0.0.0.0:0")?;
     let _ = socket.set_read_timeout(Some(Duration::from_millis(200)));
     socket.connect(remote_addr)?;
@@ -358,7 +356,7 @@ fn save_host(path: &PathBuf, host: &str) -> std::io::Result<()> {
 fn handle_message(msg: OscMessage, subscription_expiry: &mut u32) -> Option<NetEvent> {
     match msg.addr.as_str() {
         "/subscribeok" => {
-            if let Some(OscType::Int(exp)) = msg.args.get(0) {
+            if let Some(OscType::Int(exp)) = msg.args.first() {
                 *subscription_expiry = (*exp).max(2) as u32;
                 return Some(NetEvent::SubscribeOk(*subscription_expiry));
             }
@@ -368,7 +366,7 @@ fn handle_message(msg: OscMessage, subscription_expiry: &mut u32) -> Option<NetE
         "/thump" => Some(NetEvent::Thump),
         "/cuefired" => {
             let mut info = CueInfo::default();
-            if let Some(OscType::String(num)) = msg.args.get(0) {
+            if let Some(OscType::String(num)) = msg.args.first() {
                 info.number = num.clone();
             }
             if let Some(OscType::String(text)) = msg.args.get(1) {
@@ -395,7 +393,13 @@ fn send_osc(socket: &UdpSocket, addr: &str, args: &[OscType]) -> bool {
 }
 
 fn load_icon() -> egui::IconData {
-    let bytes = include_bytes!("../assets/Mac.png");
+    #[cfg(target_os = "windows")]
+    let bytes = include_bytes!("../assets/Windows.png").as_slice();
+    #[cfg(target_os = "linux")]
+    let bytes = include_bytes!("../assets/Linux.png").as_slice();
+    #[cfg(target_os = "macos")]
+    let bytes = include_bytes!("../assets/Mac.png").as_slice();
+
     let image = image::load_from_memory(bytes)
         .expect("load icon")
         .to_rgba8();
@@ -423,14 +427,27 @@ fn main() -> eframe::Result<()> {
     let (cmd_tx, cmd_rx) = mpsc::channel::<NetCmd>();
     spawn_osc_thread(host.clone(), tx, cmd_rx);
 
-    let mut native_options = eframe::NativeOptions::default();
-    native_options.viewport = ViewportBuilder::default()
-        .with_inner_size([720.0, 200.0])
-        .with_icon(load_icon());
-    #[cfg(target_os = "windows")]
-    {
-        native_options.renderer = eframe::Renderer::Wgpu;
-    }
+    let native_options = {
+        #[cfg(target_os = "windows")]
+        let mut opts = eframe::NativeOptions {
+            viewport: ViewportBuilder::default()
+                .with_inner_size([720.0, 200.0])
+                .with_icon(load_icon()),
+            ..Default::default()
+        };
+        #[cfg(not(target_os = "windows"))]
+        let opts = eframe::NativeOptions {
+            viewport: ViewportBuilder::default()
+                .with_inner_size([720.0, 200.0])
+                .with_icon(load_icon()),
+            ..Default::default()
+        };
+        #[cfg(target_os = "windows")]
+        {
+            opts.renderer = eframe::Renderer::Wgpu;
+        }
+        opts
+    };
     eframe::run_native(
         "TheatreMix Remote Display",
         native_options,
