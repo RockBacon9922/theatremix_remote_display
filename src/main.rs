@@ -1,10 +1,11 @@
-#![cfg_attr(windows, windows_subsystem = "windows")]
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 use eframe::egui::ViewportBuilder;
 use eframe::{App, Frame, egui};
 use rosc::{OscMessage, OscPacket, OscType};
 use std::fs;
-use std::net::{SocketAddr, UdpSocket};
+use std::io;
+use std::net::{ToSocketAddrs, UdpSocket};
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::thread;
@@ -222,9 +223,8 @@ fn cue_block(ui: &mut egui::Ui, cue: &CueInfo) {
 
 fn spawn_osc_thread(host: String, tx: Sender<NetEvent>, cmd_rx: Receiver<NetCmd>) {
     thread::spawn(move || {
-        let local_addr: SocketAddr = "0.0.0.0:0".parse().unwrap();
         let mut current_host = host;
-        let mut socket = bind_socket(local_addr, &current_host);
+        let mut socket = None;
 
         let mut last_subscribe = Instant::now() - Duration::from_secs(10);
         let mut subscription_expiry = 0u32;
@@ -234,7 +234,7 @@ fn spawn_osc_thread(host: String, tx: Sender<NetEvent>, cmd_rx: Receiver<NetCmd>
             match cmd_rx.try_recv() {
                 Ok(NetCmd::SetHost(new_host)) => {
                     current_host = new_host;
-                    socket = bind_socket(local_addr, &current_host);
+                    socket = None;
                     subscription_expiry = 0;
                     last_subscribe = Instant::now() - Duration::from_secs(10);
                     last_thump = Instant::now() - Duration::from_secs(10);
@@ -249,19 +249,42 @@ fn spawn_osc_thread(host: String, tx: Sender<NetEvent>, cmd_rx: Receiver<NetCmd>
                 Duration::from_secs(2)
             };
 
+            if socket.is_none() {
+                match bind_socket(&current_host) {
+                    Ok(new_socket) => socket = Some(new_socket),
+                    Err(err) => {
+                        eprintln!(
+                            "OSC socket setup failed for host '{}': {err}",
+                            current_host
+                        );
+                        thread::sleep(Duration::from_millis(500));
+                        continue;
+                    }
+                }
+            }
+
+            let Some(socket_ref) = socket.as_ref() else {
+                continue;
+            };
+            let mut reconnect = false;
+
             if last_subscribe.elapsed() >= subscribe_interval {
-                send_osc(&socket, "/subscribe", &[]);
+                if !send_osc(socket_ref, "/subscribe", &[]) {
+                    reconnect = true;
+                }
                 last_subscribe = Instant::now();
             }
 
             if last_thump.elapsed() >= Duration::from_secs(2) {
                 // Keep session alive
-                send_osc(&socket, "/thump", &[]);
+                if !send_osc(socket_ref, "/thump", &[]) {
+                    reconnect = true;
+                }
                 last_thump = Instant::now();
             }
 
             let mut buf = [0u8; 1536];
-            match socket.recv(&mut buf) {
+            match socket_ref.recv(&mut buf) {
                 Ok(n) => {
                     if let Ok((_, packet)) = rosc::decoder::decode_udp(&buf[..n]) {
                         match packet {
@@ -284,9 +307,17 @@ fn spawn_osc_thread(host: String, tx: Sender<NetEvent>, cmd_rx: Receiver<NetCmd>
                         }
                     }
                 }
-                Err(_) => {
-                    // timeout or transient error; continue
+                Err(err) => {
+                    if err.kind() != io::ErrorKind::WouldBlock
+                        && err.kind() != io::ErrorKind::TimedOut
+                    {
+                        reconnect = true;
+                    }
                 }
+            }
+
+            if reconnect {
+                socket = None;
             }
 
             thread::sleep(Duration::from_millis(100));
@@ -294,14 +325,15 @@ fn spawn_osc_thread(host: String, tx: Sender<NetEvent>, cmd_rx: Receiver<NetCmd>
     });
 }
 
-fn bind_socket(local_addr: SocketAddr, host: &str) -> UdpSocket {
-    let remote_addr: SocketAddr = format!("{host}:32000").parse().unwrap();
-    let socket = UdpSocket::bind(local_addr).expect("bind UDP socket");
-    socket
-        .set_read_timeout(Some(Duration::from_millis(200)))
-        .ok();
-    socket.connect(remote_addr).expect("connect UDP socket");
-    socket
+fn bind_socket(host: &str) -> io::Result<UdpSocket> {
+    let remote_addr = format!("{host}:32000")
+        .to_socket_addrs()?
+        .next()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "host resolved to no address"))?;
+    let socket = UdpSocket::bind("0.0.0.0:0")?;
+    let _ = socket.set_read_timeout(Some(Duration::from_millis(200)));
+    socket.connect(remote_addr)?;
+    Ok(socket)
 }
 
 fn config_path() -> Option<PathBuf> {
@@ -351,14 +383,15 @@ fn handle_message(msg: OscMessage, subscription_expiry: &mut u32) -> Option<NetE
     }
 }
 
-fn send_osc(socket: &UdpSocket, addr: &str, args: &[OscType]) {
+fn send_osc(socket: &UdpSocket, addr: &str, args: &[OscType]) -> bool {
     let msg = OscMessage {
         addr: addr.to_string(),
         args: args.to_vec(),
     };
     if let Ok(buf) = rosc::encoder::encode(&OscPacket::Message(msg)) {
-        let _ = socket.send(&buf);
+        return socket.send(&buf).is_ok();
     }
+    false
 }
 
 fn load_icon() -> egui::IconData {
