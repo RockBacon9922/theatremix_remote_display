@@ -4,7 +4,7 @@ use eframe::egui::ViewportBuilder;
 use eframe::{App, Frame, egui};
 use rosc::{OscMessage, OscPacket, OscType};
 use std::fs;
-use std::net::{SocketAddr, UdpSocket};
+use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::thread;
@@ -31,6 +31,7 @@ enum NetEvent {
     SubscribeOk(u32),
     SubscribeFail,
     Thump,
+    Error(String),
 }
 
 enum NetCmd {
@@ -87,6 +88,10 @@ impl TheatreMixApp {
             }
             NetEvent::Thump => {
                 self.state.last_rx = Some(Instant::now());
+            }
+            NetEvent::Error(msg) => {
+                self.state.connected = false;
+                self.status = format!("Error: {}", msg);
             }
         }
     }
@@ -154,12 +159,17 @@ impl App for TheatreMixApp {
                     if ui.button("Apply").clicked() {
                         let new_host = self.host_edit.trim().to_string();
                         if !new_host.is_empty() && new_host != self.host {
-                            self.host = new_host.clone();
-                            let _ = self.cmd_tx.send(NetCmd::SetHost(new_host));
-                            self.status = "Reconnecting...".to_string();
-                            self.state.connected = false;
-                            if let Some(path) = &self.config_path {
-                                let _ = save_host(path, &self.host);
+                            // Validate the host can be resolved to a socket address
+                            if format!("{}:32000", new_host).to_socket_addrs().is_ok() {
+                                self.host = new_host.clone();
+                                let _ = self.cmd_tx.send(NetCmd::SetHost(new_host));
+                                self.status = "Reconnecting...".to_string();
+                                self.state.connected = false;
+                                if let Some(path) = &self.config_path {
+                                    let _ = save_host(path, &self.host);
+                                }
+                            } else {
+                                self.status = format!("Invalid host: {}", new_host);
                             }
                         }
                     }
@@ -224,7 +234,10 @@ fn spawn_osc_thread(host: String, tx: Sender<NetEvent>, cmd_rx: Receiver<NetCmd>
     thread::spawn(move || {
         let local_addr: SocketAddr = "0.0.0.0:0".parse().unwrap();
         let mut current_host = host;
-        let mut socket = bind_socket(local_addr, &current_host);
+        let mut socket = match bind_socket(local_addr, &current_host, &tx) {
+            Ok(s) => Some(s),
+            Err(_) => None,
+        };
 
         let mut last_subscribe = Instant::now() - Duration::from_secs(10);
         let mut subscription_expiry = 0u32;
@@ -234,7 +247,10 @@ fn spawn_osc_thread(host: String, tx: Sender<NetEvent>, cmd_rx: Receiver<NetCmd>
             match cmd_rx.try_recv() {
                 Ok(NetCmd::SetHost(new_host)) => {
                     current_host = new_host;
-                    socket = bind_socket(local_addr, &current_host);
+                    socket = match bind_socket(local_addr, &current_host, &tx) {
+                        Ok(s) => Some(s),
+                        Err(_) => None,
+                    };
                     subscription_expiry = 0;
                     last_subscribe = Instant::now() - Duration::from_secs(10);
                     last_thump = Instant::now() - Duration::from_secs(10);
@@ -243,6 +259,12 @@ fn spawn_osc_thread(host: String, tx: Sender<NetEvent>, cmd_rx: Receiver<NetCmd>
                 Err(TryRecvError::Disconnected) => break,
             }
 
+            // Only proceed with network operations if we have a valid socket
+            let Some(ref sock) = socket else {
+                thread::sleep(Duration::from_millis(100));
+                continue;
+            };
+
             let subscribe_interval = if subscription_expiry > 0 {
                 Duration::from_secs((subscription_expiry / 2).max(2) as u64)
             } else {
@@ -250,18 +272,18 @@ fn spawn_osc_thread(host: String, tx: Sender<NetEvent>, cmd_rx: Receiver<NetCmd>
             };
 
             if last_subscribe.elapsed() >= subscribe_interval {
-                send_osc(&socket, "/subscribe", &[]);
+                send_osc(sock, "/subscribe", &[]);
                 last_subscribe = Instant::now();
             }
 
             if last_thump.elapsed() >= Duration::from_secs(2) {
                 // Keep session alive
-                send_osc(&socket, "/thump", &[]);
+                send_osc(sock, "/thump", &[]);
                 last_thump = Instant::now();
             }
 
             let mut buf = [0u8; 1536];
-            match socket.recv(&mut buf) {
+            match sock.recv(&mut buf) {
                 Ok(n) => {
                     if let Ok((_, packet)) = rosc::decoder::decode_udp(&buf[..n]) {
                         match packet {
@@ -294,14 +316,44 @@ fn spawn_osc_thread(host: String, tx: Sender<NetEvent>, cmd_rx: Receiver<NetCmd>
     });
 }
 
-fn bind_socket(local_addr: SocketAddr, host: &str) -> UdpSocket {
-    let remote_addr: SocketAddr = format!("{host}:32000").parse().unwrap();
-    let socket = UdpSocket::bind(local_addr).expect("bind UDP socket");
+fn bind_socket(local_addr: SocketAddr, host: &str, tx: &Sender<NetEvent>) -> Result<UdpSocket, String> {
+    // Try to resolve the host:port to a socket address
+    let addr_str = format!("{}:32000", host);
+    let remote_addr: SocketAddr = match addr_str.to_socket_addrs() {
+        Ok(mut addrs) => {
+            match addrs.next() {
+                Some(addr) => addr,
+                None => {
+                    let err_msg = format!("Could not resolve host '{}'", host);
+                    let _ = tx.send(NetEvent::Error(err_msg.clone()));
+                    return Err(err_msg);
+                }
+            }
+        }
+        Err(e) => {
+            let err_msg = format!("Invalid host address '{}': {}", host, e);
+            let _ = tx.send(NetEvent::Error(err_msg.clone()));
+            return Err(err_msg);
+        }
+    };
+    
+    let socket = match UdpSocket::bind(local_addr) {
+        Ok(s) => s,
+        Err(e) => {
+            let err_msg = format!("Failed to bind UDP socket: {}", e);
+            let _ = tx.send(NetEvent::Error(err_msg.clone()));
+            return Err(err_msg);
+        }
+    };
     socket
         .set_read_timeout(Some(Duration::from_millis(200)))
         .ok();
-    socket.connect(remote_addr).expect("connect UDP socket");
-    socket
+    if let Err(e) = socket.connect(remote_addr) {
+        let err_msg = format!("Failed to connect to {}: {}", remote_addr, e);
+        let _ = tx.send(NetEvent::Error(err_msg.clone()));
+        return Err(err_msg);
+    }
+    Ok(socket)
 }
 
 fn config_path() -> Option<PathBuf> {
